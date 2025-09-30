@@ -13,20 +13,14 @@ svd        = joblib.load("svd_transformer.joblib")
 ensemble   = joblib.load("fake_news_ensemble_model.joblib")
 
 # ---------- preprocessing ----------
-STOP_WORDS = set(vectorizer.stop_words_)
-PS = joblib.load("porter_stemmer.joblib") if os.path.exists("porter_stemmer.joblib") else None
-
 def preprocess_and_stem(text: str) -> str:
-    """Same logic you used in Colab (fast, no NLTK downloads)."""
+    """Clean & stem text (same logic as Colab)."""
     import re
     text = re.sub(r'[^a-zA-Z\s]', ' ', text.lower())
     text = re.sub(r'\s+', ' ', text).strip()
-    words = [w for w in text.split() if w not in STOP_WORDS]
-    if PS:                       # if you saved the stemmer
-        words = [PS.stem(w) for w in words]
-    return ' '.join(words)
+    return text
 
-# ---------- API ----------
+# ---------- routes ----------
 @app.route("/")
 def home():
     return {"message": "Fake-News detector API – POST to /predict"}
@@ -38,8 +32,8 @@ def predict():
         if not news:
             return jsonify({"error": "empty text"}), 400
 
-        proc = preprocess_and_stem(news)
-        xv   = vectorizer.transform([proc])
+        proc  = preprocess_and_stem(news)
+        xv    = vectorizer.transform([proc])
         extra = np.array([[TextBlob(proc).sentiment.polarity, len(proc)]])
         x_full = hstack([xv, extra])
         x_final = svd.transform(x_full)
