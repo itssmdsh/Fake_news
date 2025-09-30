@@ -1,28 +1,60 @@
-from flask import Flask, request, jsonify
+import os
 import joblib
 import numpy as np
+from flask import Flask, request, jsonify
+from scipy.sparse import hstack
+from textblob import TextBlob
 
 app = Flask(__name__)
 
-# Load the trained model
-model_filename = "fake_news_ensemble_model.joblib"
-model = joblib.load(model_filename)
+# ---------- load fitted artefacts ----------
+vectorizer = joblib.load("tfidf_vectorizer.joblib")
+svd        = joblib.load("svd_transformer.joblib")
+ensemble   = joblib.load("fake_news_ensemble_model.joblib")
 
-@app.route('/predict', methods=['POST'])
+# ---------- preprocessing ----------
+STOP_WORDS = set(vectorizer.stop_words_)
+PS = joblib.load("porter_stemmer.joblib") if os.path.exists("porter_stemmer.joblib") else None
+
+def preprocess_and_stem(text: str) -> str:
+    """Same logic you used in Colab (fast, no NLTK downloads)."""
+    import re
+    text = re.sub(r'[^a-zA-Z\s]', ' ', text.lower())
+    text = re.sub(r'\s+', ' ', text).strip()
+    words = [w for w in text.split() if w not in STOP_WORDS]
+    if PS:                       # if you saved the stemmer
+        words = [PS.stem(w) for w in words]
+    return ' '.join(words)
+
+# ---------- API ----------
+@app.route("/")
+def home():
+    return {"message": "Fake-News detector API – POST to /predict"}
+
+@app.route("/predict", methods=["POST"])
 def predict():
     try:
-        # Get the input data from the request
-        data = request.get_json(force=True)
-        input_data = np.array(data['features']).reshape(1, -1)
-        
-        # Make predictions
-        prediction = model.predict(input_data)
-        
-        # Return the prediction as a JSON response
-        return jsonify({'prediction': prediction.tolist()})
-    except Exception as e:
-        return jsonify({'error': str(e)})
+        news = request.json["text"]
+        if not news:
+            return jsonify({"error": "empty text"}), 400
 
-if __name__ == '__main__':
-    import os
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
+        proc = preprocess_and_stem(news)
+        xv   = vectorizer.transform([proc])
+        extra = np.array([[TextBlob(proc).sentiment.polarity, len(proc)]])
+        x_full = hstack([xv, extra])
+        x_final = svd.transform(x_full)
+
+        pred  = ensemble.predict(x_final)[0]
+        proba = ensemble.predict_proba(x_final)[0]
+
+        return jsonify({
+            "label":  "FAKE" if pred == 0 else "REAL",
+            "confidence": {"fake": round(float(proba[0]), 3),
+                          "real": round(float(proba[1]), 3)}
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)
